@@ -1,0 +1,43 @@
+//+build ignore
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
+#ifdef asm_inline
+#undef asm_inline
+#define asm_inline asm
+#endif
+#define GO_PT_REGS_IP(x) ((x)->ip)
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 24);
+} sys_enter_rss_maps SEC(".maps");
+
+struct sys_enter_mmap_struct_ret
+{
+    int pid;
+    u64 time;
+    atomic_long_t rss_usage;
+    uintptr_t func_addr;
+    char comm[16];
+};
+
+static __always_inline int get_rss_stat(struct pt_regs *ctx) {
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32;
+    struct sys_enter_mmap_struct_ret result = {};
+    bpf_get_current_comm(&result.comm, sizeof(result.comm));
+    result.pid = pid;
+    u64 ktime = bpf_ktime_get_ns();
+    result.time = ktime;
+    uintptr_t func_addr = (uintptr_t)GO_PT_REGS_IP(ctx);
+    result.func_addr = func_addr;
+    // 读取内存变化
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    // rss_stat.count[0]存储的是共享内存页count,rss_stat.count[1]存储的是私有内存页大小
+    atomic_long_t rss_usage = BPF_CORE_READ(task, mm, rss_stat.count[1]);
+    result.rss_usage = rss_usage;
+    bpf_ringbuf_output(&sys_enter_rss_maps, &result, sizeof(struct sys_enter_mmap_struct_ret), 0);
+    return 0;
+}
+char LICENSE[] SEC("license") = "GPL";
