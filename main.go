@@ -36,6 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 	secFunc = make(map[string]string)
+	os.Remove("./main.bpf.c")
 	openFile, err := os.OpenFile("./main.bpf.c", os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		panic(err)
