@@ -11,10 +11,12 @@ import (
 	"github.com/aquasecurity/libbpfgo/helpers"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -23,12 +25,14 @@ var secFunc map[string]string
 func main() {
 	// 定义命令行参数
 	binaryPath := flag.String("binaryPath", "", "二进制路径")
+	// 定义命令行参数
+	packageName := flag.String("packageName", "", "包名")
 	// 解析命令行参数
 	flag.Parse()
 
 	// 输出解析后的值
 	fmt.Println("二进制路径:", *binaryPath)
-	if *binaryPath == "" {
+	if *binaryPath == "" || *packageName == "" {
 		os.Exit(1)
 	}
 	secFunc = make(map[string]string)
@@ -41,7 +45,7 @@ func main() {
 		panic(err)
 	}
 	openFile.Write(file)
-	symbols := symbol(*binaryPath, "webserver")
+	symbols := symbol(*binaryPath, *packageName)
 	for _, item := range symbols {
 		sec, originName := generationSec(item)
 		_, err := openFile.WriteString(sec)
@@ -71,64 +75,81 @@ func main() {
 		os.Exit(-1)
 	}
 	defer bpfModule.Close()
-
 	bpfModule.BPFLoadObject()
 	for oringinName, funcName := range secFunc {
 		prog, err := bpfModule.GetProgram(funcName)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			fmt.Println("GetProgram", oringinName)
+			fmt.Fprintln(os.Stderr, err, "GetProgram:", oringinName)
 			os.Exit(-1)
 		}
 		offset, err := helpers.SymbolToOffset(*binaryPath, oringinName)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			fmt.Println("SymbolToOffset", oringinName)
+			fmt.Fprintln(os.Stderr, err, "SymbolToOffset:", oringinName)
 			os.Exit(-1)
 		}
 		_, err = prog.AttachUprobe(-1, *binaryPath, offset)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			fmt.Println("AttachUprobe")
+			fmt.Fprintln(os.Stderr, err, "AttachUprobe:", oringinName)
 			os.Exit(-1)
 		}
 	}
+	http.Handle("/", http.FileServer(http.Dir("./dist/")))
+	http.ListenAndServe(":3000", nil)
 
-	eventsChannel := make(chan []byte)
-	rb, err := bpfModule.InitRingBuf("sys_enter_rss_maps", eventsChannel)
+	hashMap, err := bpfModule.GetMap("hash_map")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
+		panic(err)
 	}
-
-	rb.Start()
-	numberOfEventsReceived := 0
-recvLoop:
 	for {
-		var obj chownEvent
-		event := <-eventsChannel
-
-		err := binary.Read(bytes.NewBuffer(event), binary.LittleEndian, &obj)
-		if err != nil {
-			fmt.Printf("failed to decode received data: %s\n", err)
-			continue
+		iterator := hashMap.Iterator()
+		for iterator.Next() {
+			value, err := hashMap.GetValue(unsafe.Pointer(&iterator.Key()[0]))
+			if err != nil {
+				panic(err)
+			}
+			var obj chownEvent
+			u := binary.LittleEndian.Uint64(iterator.Key())
+			err = binary.Read(bytes.NewBuffer(value), binary.LittleEndian, &obj)
+			if err != nil {
+				fmt.Printf("failed to decode received data: %s\n", err)
+				continue
+			}
+			comm := (*C.char)(unsafe.Pointer(&obj.Comm))
+			fmt.Printf("Pid:%d Time:%d Comm:%s FuncName:%x size:%d\n", obj.Pid, u, C.GoString(comm), obj.FuncAddr, obj.Size)
+			err = hashMap.DeleteKey(unsafe.Pointer(&iterator.Key()[0]))
+			panic(err)
 		}
-		comm := (*C.char)(unsafe.Pointer(&obj.Comm))
-		fmt.Printf("Pid:%d Time:%d Comm:%s FuncName:%x size:%d\n", obj.Pid, obj.Time, C.GoString(comm), obj.FuncAddr, obj.Size)
-		numberOfEventsReceived++
-		if numberOfEventsReceived > 50000 {
-			break recvLoop
-		}
+		time.Sleep(time.Second * 1)
 	}
+	//eventsChannel := make(chan []byte)
+	//rb, err := bpfModule.InitRingBuf("sys_enter_rss_maps", eventsChannel)
+	//if err != nil {
+	//	fmt.Fprintln(os.Stderr, err)
+	//	os.Exit(-1)
+	//}
+	//
+	//rb.Start()
+	//defer rb.Close()
+	//defer rb.Stop()
+	//
+	//for {
+	//	var obj chownEvent
+	//	event := <-eventsChannel
+	//
+	//	err := binary.Read(bytes.NewBuffer(event), binary.LittleEndian, &obj)
+	//	if err != nil {
+	//		fmt.Printf("failed to decode received data: %s\n", err)
+	//		continue
+	//	}
+	//	comm := (*C.char)(unsafe.Pointer(&obj.Comm))
+	//	fmt.Printf("Pid:%d Time:%d Comm:%s FuncName:%x size:%d\n", obj.Pid, obj.Time, C.GoString(comm), obj.FuncAddr, obj.Size)
+	//}
 
-	// Test that it won't cause a panic or block if Stop or Close called multiple times
-	rb.Stop()
-	rb.Close()
 }
 
 type chownEvent struct {
 	Pid      uint32
-	Pad      uint32
+	TGid     uint32
 	Time     int64
 	Size     uint64
 	FuncAddr uint64

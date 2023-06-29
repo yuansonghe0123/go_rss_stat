@@ -8,14 +8,23 @@
 #define asm_inline asm
 #endif
 #define GO_PT_REGS_IP(x) ((x)->ip)
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 24);
 } sys_enter_rss_maps SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, struct sys_enter_mmap_struct_ret);
+    __uint(max_entries, 1<<24);
+} hash_map SEC(".maps");
+
 struct sys_enter_mmap_struct_ret
 {
     int pid;
+    int tgid;
     u64 time;
     atomic_long_t rss_usage;
     uintptr_t func_addr;
@@ -23,11 +32,14 @@ struct sys_enter_mmap_struct_ret
 };
 
 static __always_inline int get_rss_stat(struct pt_regs *ctx) {
-    u64 id = bpf_get_current_pid_tgid();
-    u32 pid = id >> 32;
+    u64 tgid_pid = bpf_get_current_pid_tgid();
+    u32 tgid = tgid_pid >> 32;
+    u32 pid = tgid_pid;
+
     struct sys_enter_mmap_struct_ret result = {};
     bpf_get_current_comm(&result.comm, sizeof(result.comm));
     result.pid = pid;
+    result.tgid = tgid;
     u64 ktime = bpf_ktime_get_ns();
     result.time = ktime;
     uintptr_t func_addr = (uintptr_t)GO_PT_REGS_IP(ctx);
@@ -37,7 +49,12 @@ static __always_inline int get_rss_stat(struct pt_regs *ctx) {
     // rss_stat.count[0]存储的是共享内存页count,rss_stat.count[1]存储的是私有内存页大小
     atomic_long_t rss_usage = BPF_CORE_READ(task, mm, rss_stat.count[1]);
     result.rss_usage = rss_usage;
-    bpf_ringbuf_output(&sys_enter_rss_maps, &result, sizeof(struct sys_enter_mmap_struct_ret), 0);
+
+    // 大于linux5.8.0
+    //bpf_ringbuf_output(&sys_enter_rss_maps, &result, sizeof(struct sys_enter_mmap_struct_ret), 0);
+
+    // 小于linux5.8.0
+    bpf_map_update_elem(&hash_map, &ktime, &ret, BPF_NOEXIST);
     return 0;
 }
 char LICENSE[] SEC("license") = "GPL";
