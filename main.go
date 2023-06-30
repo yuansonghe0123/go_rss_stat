@@ -21,6 +21,7 @@ import (
 )
 
 var secFunc map[string]string
+var addrFunc map[uint64]string
 
 func main() {
 	// 定义命令行参数
@@ -36,6 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 	secFunc = make(map[string]string)
+	addrFunc = make(map[uint64]string)
 	os.Remove("./main.bpf.c")
 	openFile, err := os.OpenFile("./main.bpf.c", os.O_RDWR|os.O_CREATE, os.ModePerm)
 	if err != nil {
@@ -117,7 +119,7 @@ func main() {
 				continue
 			}
 			comm := (*C.char)(unsafe.Pointer(&obj.Comm))
-			fmt.Printf("Pid:%d Time:%d Comm:%s FuncName:%x size:%d\n", obj.Pid, u, C.GoString(comm), obj.FuncAddr, obj.Size)
+			fmt.Printf("Pid:%d Time:%d Comm:%s FuncName:%s size:%d\n", obj.Pid, u, C.GoString(comm), addrFunc[obj.FuncAddr], obj.Size)
 			err = hashMap.DeleteKey(unsafe.Pointer(&iterator.Key()[0]))
 			if err != nil {
 				panic(err)
@@ -196,6 +198,7 @@ func symbol(binaryPath, projName string) []string {
 		if sym.Section == 0x01 && sym.Info == 0x012 {
 			if strings.HasPrefix(sym.Name, projName) {
 				res = append(res, sym.Name)
+				addrFunc[sym.Value] = sym.Name
 			}
 		}
 	}
