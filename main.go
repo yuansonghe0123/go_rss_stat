@@ -199,8 +199,5 @@ func symbol(binaryPath, projName string) []string {
 			}
 		}
 	}
-	go func() {
-
-	}()
 	return res
 }
