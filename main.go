@@ -94,9 +94,10 @@ func main() {
 			os.Exit(-1)
 		}
 	}
-	http.Handle("/", http.FileServer(http.Dir("./dist/")))
-	http.ListenAndServe(":3000", nil)
-
+	go func() {
+		http.Handle("/", http.FileServer(http.Dir("./dist/")))
+		http.ListenAndServe(":3000", nil)
+	}()
 	hashMap, err := bpfModule.GetMap("hash_map")
 	if err != nil {
 		panic(err)
@@ -118,7 +119,9 @@ func main() {
 			comm := (*C.char)(unsafe.Pointer(&obj.Comm))
 			fmt.Printf("Pid:%d Time:%d Comm:%s FuncName:%x size:%d\n", obj.Pid, u, C.GoString(comm), obj.FuncAddr, obj.Size)
 			err = hashMap.DeleteKey(unsafe.Pointer(&iterator.Key()[0]))
-			panic(err)
+			if err != nil {
+				panic(err)
+			}
 		}
 		time.Sleep(time.Second * 1)
 	}
@@ -196,5 +199,8 @@ func symbol(binaryPath, projName string) []string {
 			}
 		}
 	}
+	go func() {
+
+	}()
 	return res
 }
